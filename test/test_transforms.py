@@ -2241,5 +2241,9 @@ def test_random_grayscale_with_grayscale_input():
     torch.testing.assert_close(F.pil_to_tensor(output_pil), image_tensor)
 
 
+def test_letterbox():
+    with pytest.raises(TypeError, match=r"size should be tuple of int"):
+        transforms.Letterbox(size=10)
+
 if __name__ == "__main__":
     pytest.main([__file__])
