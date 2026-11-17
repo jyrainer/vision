@@ -15,7 +15,7 @@ except ImportError:
 
 from ..utils import _log_api_usage_once
 from . import functional as F
-from .functional import _interpolation_modes_from_int, InterpolationMode
+from .functional import resize, pad, _interpolation_modes_from_int, InterpolationMode
 
 __all__ = [
     "Compose",
@@ -54,6 +54,7 @@ __all__ = [
     "RandomAutocontrast",
     "RandomEqualize",
     "ElasticTransform",
+    "LetterBox"
 ]
 
 
@@ -2151,3 +2152,143 @@ class ElasticTransform(torch.nn.Module):
         format_string += f", interpolation={self.interpolation}"
         format_string += f", fill={self.fill})"
         return format_string
+
+
+def _setup_size(size, error_msg="Please provide exactly two dimensions (height, width)."):
+    """
+    Utility function for transforms such as RandomResizedCrop.
+    Converts:
+        - A single integer into (size, size)
+        - A sequence of length 1 into (size[0], size[0])
+        - A sequence of length 2 is returned as is
+    Otherwise, raises a ValueError.
+
+    Args:
+        size (int or Sequence[int]): The desired output size.
+        error_msg (str): Error message when the input does not match the expected format.
+
+    Returns:
+        tuple: A (height, width) tuple.
+
+    Raises:
+        ValueError: If `size` is not an int or a sequence of length 1 or 2.
+    """
+    if isinstance(size, int):
+        return (size, size)
+    if isinstance(size, Sequence) and len(size) == 1:
+        return (size[0], size[0])
+    if isinstance(size, Sequence) and len(size) == 2:
+        return size
+    else:
+        raise ValueError(error_msg)
+
+
+def get_dimensions(img: torch.Tensor):
+    """
+    Extracts the shape (channels, height, width) from a torch Tensor or PIL Image.
+    Replace this with the relevant logic from your codebase as needed.
+
+    Args:
+        img (torch.Tensor or PIL Image): The input image.
+
+    Returns:
+        tuple: (channels, height, width).
+    """
+    if isinstance(img, torch.Tensor):
+        # For a tensor, assume shape = (C, H, W).
+        return img.shape
+    else:
+        # For a PIL image, convert to (channels, height, width).
+        w, h = img.size
+        # If needed, handle grayscale vs. RGB differently
+        return (1 if img.mode == "L" else 3, h, w)
+
+
+class Letterbox(nn.Module):
+    """
+    Applies a letterbox transform to resize and pad an image while maintaining its aspect ratio.
+    The output will match the specified (height, width).
+
+    Args:
+        size (int or Sequence[int]): The desired output size (height, width).
+            If an integer is provided, it will be converted to (size, size).
+        fill (int or Tuple[int]): The fill value for the padding. Can be a single integer
+            or a 3-tuple (R, G, B).
+        interpolation (InterpolationMode): The interpolation mode to use when resizing.
+        antialias (bool, optional): When resizing tensor images using bilinear or bicubic,
+            whether to apply anti-aliasing. Defaults to True (as of torchvision 0.17+).
+
+    Example:
+        >>> transform = ClassifyLetterbox(size=(224, 224))
+    """
+
+    def __init__(
+        self,
+        size,
+        fill=(114, 114, 114),
+        interpolation=InterpolationMode.BILINEAR,
+        antialias: Optional[bool] = True,
+    ):
+        super().__init__()
+        _log_api_usage_once(self)
+        self.size = _setup_size(size, error_msg="Please provide exactly two dimensions (height, width).")
+        self.fill = fill
+        self.interpolation = interpolation
+        self.antialias = antialias
+
+    def forward(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        Resizes the image (PIL Image or torch.Tensor) while maintaining aspect ratio,
+        then pads it to the target size.
+
+        Args:
+            img (PIL Image or torch.Tensor): The image to transform.
+
+        Returns:
+            PIL Image or torch.Tensor: A letterboxed image with the specified size.
+        """
+        _, orig_h, orig_w = get_dimensions(img)
+        target_h, target_w = self.size
+
+        orig_ratio = orig_w / orig_h
+        target_ratio = target_w / target_h
+
+        if orig_ratio > target_ratio:
+            # Wider than target -> match width
+            new_w = target_w
+            new_h = int(round(new_w / orig_ratio))
+        else:
+            # Taller or equal ratio -> match height
+            new_h = target_h
+            new_w = int(round(new_h * orig_ratio))
+
+        resized = resize(
+            img,
+            (new_h, new_w),
+            interpolation=self.interpolation,
+            antialias=self.antialias
+        )
+
+        pad_top = (target_h - new_h) // 2
+        pad_bottom = target_h - new_h - pad_top
+        pad_left = (target_w - new_w) // 2
+        pad_right = target_w - new_w - pad_left
+
+        padded = pad(
+            resized,
+            (pad_left, pad_top, pad_right, pad_bottom),
+            fill=self.fill
+        )
+
+        return padded
+
+    def __repr__(self) -> str:
+        interpolate_str = (
+            self.interpolation.value
+            if isinstance(self.interpolation, InterpolationMode)
+            else str(self.interpolation)
+        )
+        return (
+            f"{self.__class__.__name__}(size={self.size}, fill={self.fill}, "
+            f"interpolation={interpolate_str}, antialias={self.antialias})"
+        )
